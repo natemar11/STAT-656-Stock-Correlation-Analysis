@@ -102,7 +102,7 @@ wide_returns <- daily_returns |>
 
 ```
 
-## Correlation Heatmap
+# Correlation Heatmap
 
 First we look at a heatmap comparing correlations of a given index to another. Darker blue squares represent two tickers are more correlated (correlation value closer to 1), whereas lighter blue/white squares indicate two tickers are less correlated (correlation value closer to 0). This figure can be filtered by event window, and by correlation type (Pearson or Spearman).
 
@@ -155,6 +155,63 @@ renderPlot({
     )
 })
 
+```
+
+```{r corr_stats, echo=FALSE}
+renderPrint({
+  # Same filtering as in the heatmap
+  df <- wide_returns |>
+    filter(period == input$period_sel) |>
+    select(-date, -period)
+  
+  # Correlation matrix
+  cor_matr <- cor(
+    as.matrix(df),
+    use    = "pairwise.complete.obs",
+    method = input$corr_type
+  )
+  
+  cor_vals <- cor_matr[upper.tri(cor_matr, diag = FALSE)]
+  
+  stats <- c(
+    mean_correlation = mean(cor_vals, na.rm = TRUE),
+    var_correlation  = var(cor_vals,  na.rm = TRUE)
+  )
+  
+  cat("Summary of pairwise correlations for", input$period_sel, "\n\n")
+  print(stats)
+})
+
+```
+
+```{r corr_dist_plot, echo=FALSE}
+renderPlot({
+  # Filter to selected event window
+  df <- wide_returns |>
+    filter(period == input$period_sel) |>
+    select(-date, -period)
+  
+  # Correlation matrix
+  cor_matr <- cor(
+    as.matrix(df),
+    use    = "pairwise.complete.obs",
+    method = input$corr_type
+  )
+
+  cor_vals <- cor_matr[upper.tri(cor_matr, diag = FALSE)]
+  cor_df <- data.frame(Correlation = cor_vals)
+
+  ggplot(cor_df, aes(x = Correlation)) +
+    geom_histogram(bins = 20, fill = "#4c72b0", color = "white", alpha = 0.8) +
+    geom_vline(aes(xintercept = mean(Correlation, na.rm = TRUE)),
+               color = "red", linetype = "dashed", size = 1) +
+    theme_minimal() +
+    labs(
+      title = paste("Distribution of pairwise correlations -", input$period_sel),
+      x = "Correlation",
+      y = "Count"
+    )
+})
 ```
 
 
@@ -397,9 +454,7 @@ renderPlot({
       id_cols     = date,
       names_from  = symbol,
       values_from = ret
-    )
-
-  wide_cc <- wide_cc |>
+    ) |>
     tidyr::drop_na(all_of(c(input$cc_ticker_x, input$cc_ticker_y)))
 
   # Error handling to ensure enough data
@@ -409,7 +464,7 @@ renderPlot({
     return(NULL)
   }
 
-  # Compute cross-correlation
+  # Compute cross-correlation (no plotting here)
   cc_obj <- ccf(
     wide_cc[[input$cc_ticker_x]],
     wide_cc[[input$cc_ticker_y]],
@@ -423,20 +478,125 @@ renderPlot({
     ccf = as.numeric(cc_obj$acf)
   )
 
+  # summary metrics
+
+  max_idx <- which.max(abs(cc_df$ccf))
+  dom_lag <- cc_df$lag[max_idx]
+  dom_cc  <- cc_df$ccf[max_idx]
+
+  w <- abs(cc_df$ccf)
+  avg_lag <- sum(cc_df$lag * w) / sum(w)
+
+  base_subtitle <- if (input$cc_period == "All data") {
+    "All dates"
+  } else {
+    paste("Event window:", input$cc_period)
+  }
+
+  stats_line <- sprintf(
+    "Dominant lag: %.0f days (cc = %.2f); Avg |cc|-weighted lag: %.2f days",
+    dom_lag, dom_cc, avg_lag
+  )
+
   ggplot(cc_df, aes(x = lag, y = ccf)) +
     geom_col() +
     geom_hline(yintercept = 0, linetype = "dashed") +
+    geom_vline(xintercept = dom_lag, linetype = "dotted") +
     theme_minimal() +
     labs(
       title = paste("Cross-correlation:", input$cc_ticker_x, "vs", input$cc_ticker_y),
-      subtitle = if (input$cc_period == "All data")
-        "All dates"
-      else
-        paste("Event window:", input$cc_period),
+      subtitle = paste(base_subtitle, "\n", stats_line),
       x = "Lag (days; positive = first ticker leads second)",
       y = "Cross-correlation"
     )
 })
+```
+
+```{r weighted_lag_summary, echo=FALSE}
+
+compute_lag_summary <- function(x, y, max_lag = 20) {
+  cc <- ccf(x, y, lag.max = max_lag, plot = FALSE, na.action = na.omit)
+
+  df <- data.frame(
+    lag = as.numeric(cc$lag),
+    ccf = as.numeric(cc$acf)
+  )
+
+  # dominant lag 
+  max_idx <- which.max(abs(df$ccf))
+  dom_lag <- df$lag[max_idx]
+  dom_cc  <- df$ccf[max_idx]
+
+  # avg weighted lag
+  w <- abs(df$ccf)
+  avg_lag <- sum(df$lag * w) / sum(w)
+
+  return(data.frame(
+    avg_weighted_lag = avg_lag,
+    dom_lag          = dom_lag,
+    dom_cc           = dom_cc
+  ))
+}
+
+
+max_lag <- 20
+
+cc_results <- list()
+
+periods <- unique(c("All data", daily_returns$period))
+tickers <- sort(unique(daily_returns$symbol))
+
+for (p in periods) {
+
+  df <- if (p == "All data") {
+    daily_returns
+  } else {
+    daily_returns |> dplyr::filter(period == p)
+  }
+
+  df_wide <- df |>
+    select(date, symbol, ret) |>
+    tidyr::pivot_wider(names_from = symbol, values_from = ret) |>
+    arrange(date)
+
+  # all pairs of tickers
+  for (i in 1:(length(tickers)-1)) {
+    for (j in (i+1):length(tickers)) {
+
+      t1 <- tickers[i]
+      t2 <- tickers[j]
+
+      df_pair <- df_wide |> tidyr::drop_na(all_of(c(t1, t2)))
+
+      # skip if insufficient data
+      if (nrow(df_pair) < max_lag + 5) next
+
+      # compute lag metrics
+      lag_stats <- compute_lag_summary(
+        df_pair[[t1]],
+        df_pair[[t2]],
+        max_lag = max_lag
+      )
+
+      cc_results[[length(cc_results) + 1]] <- data.frame(
+        ticker_x = t1,
+        ticker_y = t2,
+        period   = p,
+        lag_stats
+      )
+    }
+  }
+}
+
+# bind everything into a single table
+cc_table <- dplyr::bind_rows(cc_results)
+
+top_10_lags <- cc_table |>
+  dplyr::arrange(desc(abs(avg_weighted_lag))) |>
+  dplyr::slice(1:10)
+
+top_10_lags
+
 ```
 
 
