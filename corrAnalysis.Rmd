@@ -1,0 +1,444 @@
+---
+title: "Do Semiconductor Companies Move More Tightly with Each Other or with the Broader Technology Sector, and How Does This Change Across Different market Regimes"
+output: html_document
+date: "2025-12-07"
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Package installation and setup
+
+library(tidyverse)
+library(tidyquant)
+library(lubridate)
+library(ggplot2)
+library(tidyr)
+library(shiny)
+library(dplyr)
+```
+
+# 1. Objective of this project
+The purpose of this project is to analyze correlation structure within the semiconductor industry. Specifically, we are comparing correlation internal, within sector relationships against broader tech indices. An example question would be is the movement of the price of AMD more closely follow that of another semiconductor-specific ticker, like INTC (Intel Corp) or a broader index (like XLK) tracker the full tech industry. We are also studying how these correlation relationships differ during global events, like the COVID crash or AI boom.
+
+First we define the tickers which we plan to analyze for this project and break them into two groups - semiconductor companies and technology indices.
+
+```{r ticker_def}
+
+# Capture data
+tickers <- c(
+  "NVDA", #NVIDIA - Design
+  "INTC", #Intel - CPU
+  "AMD", #AMD - Design
+  "TSM", #TSMC - Foundry
+  "ASML", #ASML - Fab Tools
+  "AMAT", #Applied Materials - Fab Tools
+  "MU", #Micron - Memory
+  "TXN", #Texas Instruments - Analog
+  "ADI", #Analog Devices - Analog
+  "XLK", #Tech Sector ETF
+  "QQQ", #NASDAQ-100
+  "VGT" #Vanguard IT ETF
+  #More to be added here
+)
+
+stock_choices <- c("NVDA", "INTC", "AMD", "TSM", "ASML", "AMAT", "MU", "TXN", "ADI")
+stock_names <- c("NVIDIA", "Intel", "AMD", "TSMC", "Applied Materials", "Micron", "Texas Instruments", "Analog Devices")
+index_choices <- c("XLK", "QQQ", "VGT")
+
+```
+
+With the selected tickers, we want to then pull their daily prices across our analysis date range, Jan 1 2015 - June 1 2025. Once these daily prices are pulled, we then convert them to daily log returns by ticker. The reason for doing this is because log returns are time-additive, scale-free, closer to being normally distributed than simple percentage returns, and help stabilize variance. This method is commonly used in the financial sector, and helps make correlations and rolling comparisons more meaningful statistically.
+
+```{r prices_and_returns}
+start_date <- as.Date("2015-01-01")
+end_date <- as.Date("2025-06-01") #Arbitrary
+
+raw_prices <- tq_get(
+  tickers,
+  get = "stock.prices",
+  from = start_date,
+  to = end_date
+)
+
+# Convert to daily log returns by ticker
+daily_returns <- raw_prices %>%
+  group_by(symbol) %>%
+  tq_transmute(
+    select = adjusted,
+    mutate_fun = periodReturn,
+    period = "daily",
+    type = "log",
+    col_rename = "ret"
+  )
+
+
+```
+
+As mentioned earlier, we are also interested in seeing how correlation differs inside different global/geopolitical conditions. To do this, we define rough date range for each event we are looking at and label them accordingly. Dates outside one of these event buckets fall into the normal/other bucket such that more standard market conditions can be looked at as well. Wide returns are defined here as well to organize the log returns data into a table where the log returns over an arbitrary period/date range for each ticker are placed into separate columns making direct comparison and correlation calculation more straight forward. 
+
+```{r event_windows}
+daily_returns <- daily_returns |>
+  mutate(
+    period = case_when(
+      date >= as.Date("2018-07-06") & date <= as.Date("2018-11-30") ~ "Tariffs Stage 1",
+      date >= as.Date("2018-12-01") & date <= as.Date("2019-04-30") ~ "Tariff Escalation",
+      date >= as.Date("2019-05-01") & date <= as.Date("2019-10-31") ~ "Tariff Peak Stress",
+      date >= as.Date("2019-11-01") & date <= as.Date("2020-02-14") ~ "Tariff Relief",
+      date >= as.Date("2020-02-15") & date <= as.Date("2020-04-30") ~ "COVID crash",
+      date >= as.Date("2023-01-01") & date <= as.Date("2024-12-31") ~ "AI boom",
+      TRUE ~ "Normal / Other"
+    )
+  )
+
+wide_returns <- daily_returns |>
+  select(date, symbol, ret, period) |>
+  pivot_wider(id_cols = c(date, period),
+              names_from = symbol,
+              values_from = ret
+              
+  )
+
+```
+
+## Correlation Heatmap
+
+First we look at a heatmap comparing correlations of a given index to another. Darker blue squares represent two tickers are more correlated (correlation value closer to 1), whereas lighter blue/white squares indicate two tickers are less correlated (correlation value closer to 0). This figure can be filtered by event window, and by correlation type (Pearson or Spearman).
+
+```{r corr_heatmap, echo=FALSE}
+inputPanel(
+  selectInput(
+    "period_sel",
+    "Choose period (event window)",
+    choices  = sort(unique(wide_returns$period)),
+    selected = "Normal / Other"
+  ),
+  selectInput(
+    "corr_type",
+    "Correlation Type:",
+    choices  = c("Pearson" = "pearson", "Spearman" = "spearman"),
+    selected = "pearson"
+  )
+)
+
+renderPlot({
+  # Filter to selected event window
+  df <- wide_returns |>
+    filter(period == input$period_sel) |>
+    select(-date, -period)
+  
+  # Correlation matrix across tickers
+  cor_matr <- cor(
+    as.matrix(df),
+    use    = "pairwise.complete.obs",
+    method = input$corr_type
+  )
+  
+  # Long form for ggplot
+  cor_df <- as.data.frame(cor_matr) |>
+    tibble::rownames_to_column("Stock1") |>
+    tidyr::pivot_longer(
+      cols      = -Stock1,
+      names_to  = "Stock2",
+      values_to = "Correlation"
+    )
+  
+  ggplot(cor_df, aes(x = Stock1, y = Stock2, fill = Correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(limits = c(-1, 1)) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(
+      title = paste("Return correlation heatmap -", input$period_sel),
+      x = NULL, y = NULL
+    )
+})
+
+```
+
+
+#Rolling Correlation
+
+```{r stock_vs_index, echo=FALSE}
+inputPanel(
+  selectInput("tick1_sel", "Choose ticker 1:", choices = c(stock_choices , index_choices)),
+  selectInput("tick2_sel", "Choose ticker 2:", choices = c(index_choices , stock_choices)),
+  sliderInput(
+    "rolling_window",
+    "Rolling correlation window (days):",
+    min   = 20,
+    max   = 250,
+    value = 60,
+    step  = 10
+  )
+)
+
+renderPlot({
+  df <- wide_returns |>
+    select(date, period, all_of(c(input$tick1_sel, input$tick2_sel))) |>
+    arrange(date)
+
+  w <- input$rolling_window
+  n <- nrow(df)
+
+  if (n <= w) {
+    plot.new()
+    text(0.5, 0.5, "Not enough data for this window size")
+    return(NULL)
+  }
+
+  roll_cor <- sapply(seq_len(n - w + 1), function(i) {
+    cor(
+      df[[input$tick1_sel]][i:(i + w - 1)],
+      df[[input$tick2_sel]][i:(i + w - 1)],
+      use = "pairwise.complete.obs"
+    )
+  })
+
+  cor_df <- data.frame(
+    date       = df$date[w:n],
+    RollingCor = roll_cor
+  )
+
+  ggplot(cor_df, aes(x = date, y = RollingCor)) +
+    geom_line() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    theme_minimal() +
+    labs(
+      title    = paste("Rolling correlation:", input$tick1_sel, "vs", input$tick2_sel),
+      subtitle = paste("Window:", w, "trading days"),
+      y        = "Rolling correlation",
+      x        = "Date"
+    )
+})
+```
+
+## Semiconductor Internal vs Index Correlation
+
+The table below provides correlation values for the set of semiconductor tickers internally, and against the three defined indexes. This can be used to analyze whether the log returns between the semiconductor stocks are more or less correlated than the semiconductor stocks and a given index.
+
+```{r avg_corrs, echo=FALSE}
+avg_corr_between <- function(df, groupA, groupB) {
+  cor_mat <- cor(
+    df[, groupA, drop = FALSE],
+    df[, groupB, drop = FALSE],
+    use = "pairwise.complete.obs"
+  )
+  mean(cor_mat, na.rm = TRUE)
+}
+
+summary_tbl <- wide_returns %>%
+  group_by(period) %>%
+  summarize(
+    semi_internal_corr = {
+      # internal semiconductor correlation 
+      cm <- cor(select(cur_data_all(), all_of(stock_choices)),
+                use = "pairwise.complete.obs")
+      mean(cm[lower.tri(cm)], na.rm = TRUE)
+    },
+
+    # semi - XLK
+    semi_XLK = avg_corr_between(
+      df = cur_data_all(),
+      groupA = stock_choices,
+      groupB = "XLK"
+    ),
+
+    # semi - QQQ
+    semi_QQQ = avg_corr_between(
+      df = cur_data_all(),
+      groupA = stock_choices,
+      groupB = "QQQ"
+    ),
+
+    # semi - VGT
+    semi_VGT = avg_corr_between(
+      df = cur_data_all(),
+      groupA = stock_choices,
+      groupB = "VGT"
+    )
+  )
+
+summary_tbl
+```
+
+```{r correlation_heatmap, echo=FALSE}
+# UI controls
+inputPanel(
+  selectInput(
+    "period_cluster",
+    "Choose period (event window)",
+    choices  = sort(unique(wide_returns$period)),
+    selected = "Normal / Other"
+  ),
+  selectInput(
+    "corr_type_cluster",
+    "Correlation Type:",
+    choices  = c("Pearson" = "pearson", "Spearman" = "spearman"),
+    selected = "pearson"
+  )
+)
+
+renderPlot({
+  df <- wide_returns |>
+    dplyr::filter(period == input$period_cluster) |>
+    dplyr::select(-date, -period)
+
+  # Error handling
+  if (nrow(df) < 5) {
+    plot.new()
+    text(0.5, 0.5, "Not enough data in this period to compute correlations")
+    return(NULL)
+  }
+
+  cor_matr <- stats::cor(
+    as.matrix(df),
+    use    = "pairwise.complete.obs",
+    method = input$corr_type_cluster
+  )
+  
+  dist_mat <- stats::as.dist(1 - cor_matr)
+  hc       <- stats::hclust(dist_mat, method = "average")
+
+  ord          <- hc$order
+  cor_matr_ord <- cor_matr[ord, ord]
+
+  cor_df <- as.data.frame(cor_matr_ord) |>
+    tibble::rownames_to_column("Stock1") |>
+    tidyr::pivot_longer(
+      cols      = -Stock1,
+      names_to  = "Stock2",
+      values_to = "Correlation"
+    )
+
+  ggplot(cor_df, aes(x = Stock1, y = Stock2, fill = Correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(limits = c(-1, 1)) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(
+      title = paste("Clustered correlation heatmap -", input$period_cluster),
+      x = NULL, y = NULL
+    )
+})
+
+```
+
+```{r volatility_by_period, echo=FALSE}
+volatility_tbl <- daily_returns %>%
+  group_by(period, symbol) %>%
+  summarize(
+    volatility = sd(ret, na.rm = TRUE),
+    n_obs      = n(),
+    .groups    = "drop"
+  ) %>%
+  arrange(period, desc(volatility))
+```
+
+```{r volatility_heatmap, echo=FALSE}
+ggplot(volatility_tbl, aes(x = period, y = symbol, fill = volatility)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "red") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Volatility (Std. Dev. of Returns) by Period",
+    x = "Period",
+    y = "Ticker",
+    fill = "Volatility"
+  )
+```
+
+```{r cross_corr_viewer, echo=FALSE}
+# Tickers for cross-correlation (from daily_returns)
+cc_tickers <- sort(unique(daily_returns$symbol))
+
+inputPanel(
+  selectInput(
+    "cc_ticker_x",
+    "First ticker (potential leader):",
+    choices  = cc_tickers,
+    selected = "NVDA"
+  ),
+  selectInput(
+    "cc_ticker_y",
+    "Second ticker:",
+    choices  = cc_tickers,
+    selected = "XLK"
+  ),
+  selectInput(
+    "cc_period",
+    "Event window:",
+    choices  = c("All data", sort(unique(daily_returns$period))),
+    selected = "All data"
+  ),
+  sliderInput(
+    "cc_max_lag",
+    "Maximum lag (trading days):",
+    min   = 5,
+    max   = 45,
+    value = 20,
+    step  = 1
+  )
+)
+
+renderPlot({
+  # Subset by event window
+  df <- daily_returns
+  if (input$cc_period != "All data") {
+    df <- df |> dplyr::filter(period == input$cc_period)
+  }
+
+  wide_cc <- df |>
+    dplyr::filter(symbol %in% c(input$cc_ticker_x, input$cc_ticker_y)) |>
+    dplyr::select(date, symbol, ret) |>
+    tidyr::pivot_wider(
+      id_cols     = date,
+      names_from  = symbol,
+      values_from = ret
+    )
+
+  wide_cc <- wide_cc |>
+    tidyr::drop_na(all_of(c(input$cc_ticker_x, input$cc_ticker_y)))
+
+  # Error handling to ensure enough data
+  if (nrow(wide_cc) < input$cc_max_lag + 5) {
+    plot.new()
+    text(0.5, 0.5, "Not enough data for chosen lag/window")
+    return(NULL)
+  }
+
+  # Compute cross-correlation
+  cc_obj <- ccf(
+    wide_cc[[input$cc_ticker_x]],
+    wide_cc[[input$cc_ticker_y]],
+    lag.max   = input$cc_max_lag,
+    plot      = FALSE,
+    na.action = na.omit
+  )
+
+  cc_df <- data.frame(
+    lag = as.numeric(cc_obj$lag),
+    ccf = as.numeric(cc_obj$acf)
+  )
+
+  ggplot(cc_df, aes(x = lag, y = ccf)) +
+    geom_col() +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    theme_minimal() +
+    labs(
+      title = paste("Cross-correlation:", input$cc_ticker_x, "vs", input$cc_ticker_y),
+      subtitle = if (input$cc_period == "All data")
+        "All dates"
+      else
+        paste("Event window:", input$cc_period),
+      x = "Lag (days; positive = first ticker leads second)",
+      y = "Cross-correlation"
+    )
+})
+```
+
+
+
+
