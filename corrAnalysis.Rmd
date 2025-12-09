@@ -106,6 +106,8 @@ wide_returns <- daily_returns |>
 
 First we look at a heatmap comparing correlations of a given index to another. Darker blue squares represent two tickers are more correlated (correlation value closer to 1), whereas lighter blue/white squares indicate two tickers are less correlated (correlation value closer to 0). This figure can be filtered by event window, and by correlation type (Pearson or Spearman).
 
+One thing we noticed is that AMD is the company that generally correlates least with the broader market. It can be predicted with its most correlated stock, Nvidia.
+
 ```{r corr_heatmap, echo=FALSE}
 inputPanel(
   selectInput(
@@ -216,6 +218,8 @@ renderPlot({
 
 
 #Rolling Correlation
+
+One thing we noticed was a general upward trend in correlation. In addition, we can see major events that affected all companies, such as the event from 2022 to 2023 where all companies got spikes in relative correlations. We can ignore those time frames in favor of "normal times" to get a better idea of how companies correlate in normal conditions.
 
 ```{r stock_vs_index, echo=FALSE}
 inputPanel(
@@ -406,6 +410,10 @@ ggplot(volatility_tbl, aes(x = period, y = symbol, fill = volatility)) +
     fill = "Volatility"
   )
 ```
+
+## Volatility
+
+We noticed that the tariff relief period had the lowest volatility, and covid had the highest volatility. Additionally, we noticed that during the first stage of tariff relief, AMD and Nvidia had high volatility in comparision to other companies. However, Nvidia and ASML have a similarly good correlation, while ASML has lower volatility. Therefore, it might be a good idea to try and compare Nvidia and ASML, since ASML might be more consistent, and they have a similar lag.
 
 ```{r cross_corr_viewer, echo=FALSE}
 # Tickers for cross-correlation (from daily_returns)
